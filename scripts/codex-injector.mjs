@@ -112,6 +112,7 @@ function stableCodexUserId(account) {
     && typeof account.account.email === "string"
     ? account.account.email.trim().toLowerCase()
     : "";
+  if (!email && account?.account?.type === "chatgpt") return "";
   if (!email) throw new Error("The current Codex ChatGPT account email is unavailable");
   const digest = createHash("sha256")
     .update("codex-taskboard-user\0")
