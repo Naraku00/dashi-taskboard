@@ -36,7 +36,7 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
 });
 
 test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
-  assert.match(source, /const PLUGIN_LABELS = \["插件", "plugins"\]/);
+  assert.match(source, /const PLUGIN_LABELS = \["插件", "plugins", "外掛程式", "プラグイン"\]/);
   assert.match(source, /if \(plugin\?\.parentElement\) return plugin;/);
   assert.match(source, /return directButtons\.length >= 3/);
   assert.match(source, /const button = reference\.cloneNode\(true\)/);
@@ -51,6 +51,61 @@ test("entry clones the native Plugins row and the page covers the complete Codex
   assert.doesNotMatch(source, /codex-taskboard-overlay/);
   assert.doesNotMatch(source, /codex-taskboard-toolbar/);
   assert.doesNotMatch(source, /aria-modal/);
+});
+
+test("entry recognizes the reported localized Plugins labels and keeps Taskboard copy binary", () => {
+  const normalizedLabelSource = source.slice(
+    source.indexOf("function normalizedLabel"),
+    source.indexOf("\n\n  function hostLanguage"),
+  );
+  const referenceSource = source.slice(
+    source.indexOf("function buttonMatches"),
+    source.indexOf("\n\n  function replaceEntryIcon"),
+  );
+  let currentButton;
+  const scroll = {
+    querySelector: () => null,
+    querySelectorAll: (selector) => selector === "button" ? [currentButton] : [],
+  };
+  const findReferenceButton = vm.runInNewContext(`(() => {
+    const PLUGIN_LABELS = ["插件", "plugins", "外掛程式", "プラグイン"];
+    ${normalizedLabelSource}
+    ${referenceSource}
+    return findReferenceButton;
+  })()`, {
+    document: { querySelector: () => scroll },
+  });
+
+  for (const textContent of ["插件", "外掛程式", "プラグイン", "Plugins"]) {
+    currentButton = {
+      textContent,
+      getAttribute: () => null,
+      parentElement: {},
+    };
+    assert.equal(findReferenceButton(), currentButton);
+  }
+
+  const languageDocument = { documentElement: { lang: "" } };
+  const languageSource = source.slice(
+    source.indexOf("function hostLanguage"),
+    source.indexOf("\n\n  function hostError"),
+  );
+  const hostText = vm.runInNewContext(`(() => {
+    ${languageSource}
+    return hostText;
+  })()`, {
+    document: languageDocument,
+    navigator: { language: "en-US" },
+  });
+
+  for (const language of ["zh", "zh-CN", "zh-TW", "zh-HK"]) {
+    languageDocument.documentElement.lang = language;
+    assert.equal(hostText("任务面板", "Taskboard"), "任务面板");
+  }
+  for (const language of ["en-US", "ja-JP", "de-DE"]) {
+    languageDocument.documentElement.lang = language;
+    assert.equal(hostText("任务面板", "Taskboard"), "Taskboard");
+  }
 });
 
 test("opening Taskboard suppresses native selection and contextual header until close", () => {
