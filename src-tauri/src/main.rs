@@ -1813,6 +1813,7 @@ async fn install_update(
     let finish_state = Arc::clone(state);
     let finish_dialog = update_dialog.clone();
     let mut downloaded = 0_u64;
+    let mut displayed_progress = None;
     let download_result = {
         let download = download_update(
             app,
@@ -1826,6 +1827,10 @@ async fn install_update(
                         .saturating_div(total)
                         .min(100)
                 });
+                if progress == displayed_progress {
+                    return;
+                }
+                displayed_progress = progress;
                 let snapshot = update_snapshot(&progress_app, &progress_state, |snapshot| {
                     snapshot.update_message = match progress {
                         Some(progress) => {
