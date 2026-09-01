@@ -2295,15 +2295,31 @@ function installTaskboardHostBinding(
       isAuthorizedContext: (executionContextId) => executionContextId === activeContextId,
       parseAutomationRequest: parseTaskboardAutomationHostRequest,
       ensure: () => supervisor.ensure({ force: true }),
-      readCurrentUser: async () => ({
-        userId: stableCodexUserId(await requestCodexAppServerViaCdp(
+      readCurrentUser: async () => {
+        let account = await requestCodexAppServerViaCdp(
           cdp,
           undefined,
           "local",
           "account/read",
           { refreshToken: false },
-        )),
-      }),
+        );
+        if (
+          account?.account?.type === "chatgpt"
+          && (
+            typeof account.account.email !== "string"
+            || !account.account.email.trim()
+          )
+        ) {
+          account = await requestCodexAppServerViaCdp(
+            cdp,
+            undefined,
+            "local",
+            "account/read",
+            { refreshToken: true },
+          );
+        }
+        return { userId: stableCodexUserId(account) };
+      },
       loadFrame: (request) => loadTaskboardFrameViaCdp(
         cdp,
         request.frameName,
