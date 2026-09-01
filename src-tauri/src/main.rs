@@ -87,6 +87,14 @@ const TASKBOARD_PREFERRED_PORT: u16 = 47823;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const TASKBOARD_LISTEN_FD: i32 = 5;
 
+fn release_version() -> &'static str {
+    option_env!("CODEX_TASKBOARD_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+fn is_beta_release() -> bool {
+    release_version().contains("-beta.")
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LauncherSnapshot {
@@ -1625,7 +1633,15 @@ async fn check_for_startup_update(
         snapshot.update_available = false;
     });
     let update = app
-        .updater()
+        .updater_builder()
+        .version_comparator(|current, release| {
+            if is_beta_release() {
+                release.version >= current
+            } else {
+                release.version > current
+            }
+        })
+        .build()
         .map_err(|error| error.to_string())?
         .check()
         .await
@@ -1642,7 +1658,8 @@ async fn check_for_startup_update(
         None => {
             append_log(state, "No update is available");
             update_snapshot(app, state, |snapshot| {
-                snapshot.update_message = "当前已是最新版本。".into();
+                snapshot.update_message =
+                    format!("当前版本 {} 已是最新版本。", snapshot.version.as_str());
                 snapshot.update_available = false;
             });
         }
@@ -1928,8 +1945,9 @@ async fn offer_update(
     };
     let Some(update) = update else {
         if show_current_version {
+            let current_version = state.snapshot.lock().unwrap().version.clone();
             app.dialog()
-                .message("当前已是最新版本。")
+                .message(format!("当前版本 {current_version} 已是最新版本。"))
                 .title("Codex Taskboard 更新")
                 .buttons(MessageDialogButtons::Ok)
                 .blocking_show();
@@ -2060,7 +2078,7 @@ fn main() {
                 app.handle().exit(0);
                 return Ok(());
             };
-            let version = app.package_info().version.to_string();
+            let version = release_version().to_string();
             let state = Arc::new(LauncherState::new(
                 data_directory,
                 log_directory,
