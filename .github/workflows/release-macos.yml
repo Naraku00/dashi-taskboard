@@ -638,80 +638,56 @@ jobs:
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg"
           gh release upload "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.deb"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.deb.sig"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.AppImage"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.AppImage.sig"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_NSIS-x64-unsigned.exe"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig"
-          gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.deb" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.deb.sig" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.AppImage" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.AppImage.sig" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_NSIS-x64-unsigned.exe" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
             "$RELEASE_ASSETS/latest.json"
 
-  promote-release:
-    name: Verify and publish immutable macOS release
-    needs: draft-release
-    runs-on: macos-latest
-    timeout-minutes: 30
+  approve-stable-release:
+    name: Approve stable release
+    needs:
+      - release-preflight
+      - draft-release
+    if: ${{ needs['release-preflight'].outputs.prerelease == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     environment: macos-release
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+      - name: Confirm protected stable promotion
+        env:
+          RELEASE_TAG: ${{ needs['release-preflight'].outputs.release_tag }}
+        run: echo "Approved stable promotion for $RELEASE_TAG"
 
-      - name: Set up Node.js 22
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: 22
+  promote-release:
+    name: Verify and publish immutable release
+    needs:
+      - release-preflight
+      - draft-release
+      - approve-stable-release
+    if: ${{ !cancelled() && needs['release-preflight'].result == 'success' && needs['draft-release'].result == 'success' && (needs['release-preflight'].outputs.prerelease == 'true' || needs['approve-stable-release'].result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ needs['release-preflight'].outputs.release_tag }}
+      PACKAGE_VERSION: ${{ needs['release-preflight'].outputs.package_version }}
+      EXPECTED_PRERELEASE: ${{ needs['release-preflight'].outputs.prerelease }}
 
+    steps:
       - name: Validate protected release promotion
         env:
-          GH_TOKEN: ${{ github.token }}
           RULESET_TOKEN: ${{ secrets.RELEASE_RULESET_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          EXPECTED_PRERELEASE=false
-          APP_NAME="Codex Taskboard.app"
-          if [[ "$RELEASE_TAG" == "v$PACKAGE_VERSION" ]]; then
-            :
-          elif [[ "$RELEASE_TAG" == "v$PACKAGE_VERSION-beta."* ]]; then
-            BETA_NUMBER="${RELEASE_TAG#"v$PACKAGE_VERSION-beta."}"
-            if [[ ! "$BETA_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-              echo "promotion 收到无效的 Beta 标签。" >&2
-              exit 1
-            fi
-            EXPECTED_PRERELEASE=true
-            APP_NAME="Codex Taskboard Beta.app"
-          else
-            echo "promotion 标签与应用版本不一致。" >&2
+          if [[ "$EXPECTED_PRERELEASE" != "true" && "$EXPECTED_PRERELEASE" != "false" ]]; then
+            echo "promotion 收到无效的 prerelease 状态。" >&2
             exit 1
           fi
-          if [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
-            echo "promotion checkout、标签和应用版本不一致。" >&2
-            exit 1
-          fi
-          echo "EXPECTED_PRERELEASE=$EXPECTED_PRERELEASE" >> "$GITHUB_ENV"
-          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
-
           if [[ -z "$RULESET_TOKEN" ]]; then
             echo "缺少 RELEASE_RULESET_TOKEN，无法确认标签 Ruleset 的绕过者。" >&2
             exit 1
@@ -781,92 +757,15 @@ jobs:
           name: macos-release-${{ github.sha }}-sha256
           path: ${{ runner.temp }}/trusted-release-manifest
 
-      - name: Download and verify Draft Release assets
+      - name: Verify Draft Release digests and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
-          DRAFT_ASSETS="$RUNNER_TEMP/draft-release-assets"
-          EXPECTED_ASSETS="$RUNNER_TEMP/expected-release-assets.txt"
-          ACTUAL_ASSETS="$RUNNER_TEMP/actual-release-assets.txt"
-
-          RELEASES="$(gh api --header "$API_VERSION_HEADER" \
-            "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
-          DRAFT_RELEASE="$(jq -c \
-            --arg tag "$RELEASE_TAG" \
-            '[.[] | select(.tag_name == $tag and .draft == true)] | if length == 1 then .[0] else empty end' \
-            <<< "$RELEASES")"
-          if [[ -z "$DRAFT_RELEASE" ]]; then
-            echo "找不到唯一的目标 Draft Release。" >&2
-            exit 1
-          fi
-          if ! jq -e \
-            --arg tag "$RELEASE_TAG" \
-            --arg target "$GITHUB_SHA" \
-            --argjson prerelease "$EXPECTED_PRERELEASE" \
-            '.tag_name == $tag and
-             .target_commitish == $target and
-             .draft == true and
-             .prerelease == $prerelease' \
-            <<< "$DRAFT_RELEASE" >/dev/null; then
-            echo "promotion 只能处理指向构建提交且通道状态正确的 Draft Release。" >&2
-            exit 1
-          fi
-
-          mkdir -p "$DRAFT_ASSETS"
-          while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
-            gh api \
-              --header "$API_VERSION_HEADER" \
-              --header "Accept: application/octet-stream" \
-              "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
-              > "$DRAFT_ASSETS/$ASSET_NAME"
-          done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<< "$DRAFT_RELEASE")
-          sed -E 's/^[0-9a-f]{64}  //' "$MANIFEST_PATH" | LC_ALL=C sort > "$EXPECTED_ASSETS"
-          node -e \
-            'const fs=require("node:fs"); for (const name of fs.readdirSync(process.argv[1]).sort()) console.log(name)' \
-            "$DRAFT_ASSETS" > "$ACTUAL_ASSETS"
-          diff -u "$EXPECTED_ASSETS" "$ACTUAL_ASSETS"
-          (
-            cd "$DRAFT_ASSETS"
-            shasum -a 256 --check "$MANIFEST_PATH"
-          )
-
-          UPDATER_ROOT="$RUNNER_TEMP/remote-updater"
-          mkdir -p "$UPDATER_ROOT"
-          tar -xzf \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
-            -C "$UPDATER_ROOT"
-          MACOS_RELEASE_ROOT="$RUNNER_TEMP/remote-macos-release"
-          mkdir -p "$MACOS_RELEASE_ROOT"
-          cp \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
-            "$MACOS_RELEASE_ROOT/"
-          jq 'del(.platforms["linux-x86_64-deb"], .platforms["linux-x86_64-appimage"])' \
-            "$DRAFT_ASSETS/latest.json" > "$MACOS_RELEASE_ROOT/latest.json"
-          npm run app:verify-release -- \
-            "$UPDATER_ROOT/$APP_NAME" \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
-            "$MACOS_RELEASE_ROOT" \
-            "$RELEASE_TAG"
-          node scripts/verify-linux-updater.mjs \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.deb" \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_Ubuntu-24.04-x64.AppImage" \
-            "$DRAFT_ASSETS/latest.json" \
-            "$RELEASE_TAG"
-
-      - name: Publish verified Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
           MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
+          LATEST_PATH="$RUNNER_TEMP/release-latest.json"
+          FIRST_ASSET_NAME="Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg"
           RELEASES="$(gh api --header "$API_VERSION_HEADER" \
             "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
           DRAFT_RELEASE="$(jq -c \
@@ -882,6 +781,7 @@ jobs:
           if ! jq -e \
             --arg tag "$RELEASE_TAG" \
             --arg target "$GITHUB_SHA" \
+            --arg first_asset "$FIRST_ASSET_NAME" \
             --argjson prerelease "$EXPECTED_PRERELEASE" \
             --argjson asset_count "$EXPECTED_ASSET_COUNT" \
             '.tag_name == $tag and
@@ -889,9 +789,10 @@ jobs:
              .draft == true and
              .prerelease == $prerelease and
              (.assets | length) == $asset_count and
+             .assets[0].name == $first_asset and
              all(.assets[]; .state == "uploaded")' \
             <<< "$DRAFT_RELEASE" >/dev/null; then
-            echo "发布前 Draft Release 或资产集合发生变化。" >&2
+            echo "发布前 Draft Release、通道、DMG 首位或资产集合发生变化。" >&2
             exit 1
           fi
 
@@ -906,14 +807,37 @@ jobs:
             fi
           done < "$MANIFEST_PATH"
 
-          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
-          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
-            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          if ! REMOTE_TAG_COMMIT="$(gh api \
+            --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" \
+            --jq '.sha')"; then
+            echo "发布前无法重新读取远程标签。" >&2
+            exit 1
           fi
           if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
             echo "发布前远程标签与构建提交不一致。" >&2
             exit 1
           fi
+
+          LATEST_ASSET_ID="$(jq -r \
+            '[.assets[] | select(.name == "latest.json")] | if length == 1 then .[0].id else empty end' \
+            <<< "$DRAFT_RELEASE")"
+          EXPECTED_LATEST_SHA256="$(awk '$2 == "latest.json" { print $1 }' "$MANIFEST_PATH")"
+          if [[ -z "$LATEST_ASSET_ID" || -z "$EXPECTED_LATEST_SHA256" ]]; then
+            echo "Draft Release 或 manifest 缺少唯一的 latest.json。" >&2
+            exit 1
+          fi
+          gh api \
+            --header "$API_VERSION_HEADER" \
+            --header "Accept: application/octet-stream" \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$LATEST_ASSET_ID" \
+            > "$LATEST_PATH"
+          ACTUAL_LATEST_SHA256="$(sha256sum "$LATEST_PATH" | awk '{ print $1 }')"
+          if [[ "$ACTUAL_LATEST_SHA256" != "$EXPECTED_LATEST_SHA256" ]]; then
+            echo "下载的 latest.json 与构建 manifest 不一致。" >&2
+            exit 1
+          fi
+          jq -e . "$LATEST_PATH" >/dev/null
 
           RELEASE_ID="$(jq -r '.id' <<< "$DRAFT_RELEASE")"
           gh api --header "$API_VERSION_HEADER" \
@@ -924,11 +848,11 @@ jobs:
       - name: Verify final immutable Release and assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
           MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
+          FIRST_ASSET_NAME="Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg"
           FINAL_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
             "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
           LATEST_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
@@ -938,6 +862,7 @@ jobs:
           if ! jq -e \
             --arg tag "$RELEASE_TAG" \
             --arg target "$GITHUB_SHA" \
+            --arg first_asset "$FIRST_ASSET_NAME" \
             --argjson prerelease "$EXPECTED_PRERELEASE" \
             --argjson asset_count "$EXPECTED_ASSET_COUNT" \
             '.tag_name == $tag and
@@ -945,9 +870,11 @@ jobs:
              .draft == false and
              .prerelease == $prerelease and
              .immutable == true and
-             (.assets | length) == $asset_count' \
+             (.assets | length) == $asset_count and
+             .assets[0].name == $first_asset and
+             all(.assets[]; .state == "uploaded")' \
             <<< "$FINAL_RELEASE" >/dev/null; then
-            echo "最终 Release 的发布、通道、锁定或资产状态不正确。" >&2
+            echo "最终 Release 的发布、通道、锁定、DMG 首位或资产状态不正确。" >&2
             exit 1
           fi
 
@@ -976,20 +903,17 @@ jobs:
             fi
           done < "$MANIFEST_PATH"
 
-      - name: Update Beta updater metadata
+      - name: Update and verify Beta updater metadata
+        if: env.EXPECTED_PRERELEASE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ "$EXPECTED_PRERELEASE" != "true" ]]; then
-            exit 0
-          fi
-
           API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
           BETA_FEED_BRANCH="beta-updater"
           BETA_FEED_PATH="latest.json"
-          LATEST_PATH="$RUNNER_TEMP/draft-release-assets/latest.json"
+          LATEST_PATH="$RUNNER_TEMP/release-latest.json"
+          REMOTE_LATEST_PATH="$RUNNER_TEMP/beta-updater-latest.json"
 
           if ! gh api --header "$API_VERSION_HEADER" \
             "repos/$GITHUB_REPOSITORY/git/ref/heads/$BETA_FEED_BRANCH" >/dev/null 2>&1; then
@@ -1013,6 +937,26 @@ jobs:
           if [[ -n "$FILE_SHA" ]]; then
             UPDATE_ARGS+=(-f "sha=$FILE_SHA")
           fi
-          gh api --header "$API_VERSION_HEADER" \
+          UPDATE_RESULT="$(gh api --header "$API_VERSION_HEADER" \
             "${UPDATE_ARGS[@]}" \
-            "repos/$GITHUB_REPOSITORY/contents/$BETA_FEED_PATH" >/dev/null
+            "repos/$GITHUB_REPOSITORY/contents/$BETA_FEED_PATH")"
+          UPDATED_FILE_SHA="$(jq -r '.content.sha // empty' <<< "$UPDATE_RESULT")"
+          if [[ -z "$UPDATED_FILE_SHA" ]]; then
+            echo "Beta updater metadata 更新未返回文件 SHA。" >&2
+            exit 1
+          fi
+
+          REMOTE_FILE="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/contents/$BETA_FEED_PATH?ref=$BETA_FEED_BRANCH")"
+          if [[ "$(jq -r '.sha // empty' <<< "$REMOTE_FILE")" != "$UPDATED_FILE_SHA" ]]; then
+            echo "Beta updater metadata 回读 SHA 与写入结果不一致。" >&2
+            exit 1
+          fi
+          jq -r '.content' <<< "$REMOTE_FILE" \
+            | tr -d '\n' \
+            | base64 --decode \
+            > "$REMOTE_LATEST_PATH"
+          if ! cmp -s "$LATEST_PATH" "$REMOTE_LATEST_PATH"; then
+            echo "Beta updater metadata 回读内容与已验证 Release metadata 不一致。" >&2
+            exit 1
+          fi
