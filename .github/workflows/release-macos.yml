@@ -972,3 +972,44 @@ jobs:
               exit 1
             fi
           done < "$MANIFEST_PATH"
+
+      - name: Update Beta updater metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EXPECTED_PRERELEASE" != "true" ]]; then
+            exit 0
+          fi
+
+          API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
+          BETA_FEED_BRANCH="beta-updater"
+          BETA_FEED_PATH="latest.json"
+          LATEST_PATH="$RUNNER_TEMP/draft-release-assets/latest.json"
+
+          if ! gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/$BETA_FEED_BRANCH" >/dev/null 2>&1; then
+            gh api --header "$API_VERSION_HEADER" \
+              --method POST \
+              -f ref="refs/heads/$BETA_FEED_BRANCH" \
+              -f sha="$GITHUB_SHA" \
+              "repos/$GITHUB_REPOSITORY/git/refs" >/dev/null
+          fi
+
+          FILE_SHA="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/contents/$BETA_FEED_PATH?ref=$BETA_FEED_BRANCH" \
+            --jq '.sha' 2>/dev/null || true)"
+          CONTENT="$(base64 < "$LATEST_PATH" | tr -d '\n')"
+          UPDATE_ARGS=(
+            --method PUT
+            -f "message=Update Beta updater metadata for $RELEASE_TAG"
+            -f "content=$CONTENT"
+            -f "branch=$BETA_FEED_BRANCH"
+          )
+          if [[ -n "$FILE_SHA" ]]; then
+            UPDATE_ARGS+=(-f "sha=$FILE_SHA")
+          fi
+          gh api --header "$API_VERSION_HEADER" \
+            "${UPDATE_ARGS[@]}" \
+            "repos/$GITHUB_REPOSITORY/contents/$BETA_FEED_PATH" >/dev/null
