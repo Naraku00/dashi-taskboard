@@ -206,7 +206,7 @@ test("automation list rebuilds a stored policy on the incoming project identity"
 
 test("managed private-CDP spawn failures are bounded without changing the launch path", async () => {
   const launchStart = source.indexOf("function managedCodexSpawnFailure");
-  const launchEnd = source.indexOf("\n\nclass CdpConnection", launchStart);
+  const launchEnd = source.indexOf("class CdpConnection", launchStart);
   assert.notEqual(launchStart, -1);
   assert.notEqual(launchEnd, -1);
 
