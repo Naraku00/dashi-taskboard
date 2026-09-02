@@ -76,6 +76,8 @@ const LAUNCHER_STOP_TIMEOUT: Duration = Duration::from_secs(36);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const BETA_UPDATER_ENDPOINT: &str =
     "https://raw.githubusercontent.com/chuspeeism/dashi-taskboard/beta-updater/latest.json";
+#[cfg(target_os = "macos")]
+const BETA_BUNDLE_MIGRATION_ENV: &str = "CODEX_TASKBOARD_BETA_BUNDLE_MIGRATED";
 // Unique whole-directory snapshots shipped from app-v0.2.0 through v1.1.2.
 const KNOWN_TASKBOARD_SKILL_DIGESTS: [&str; 6] = [
     "eeaaa5d71a2c47688bf62a5eb9f45e9138fe49eb636a46cfd6af8a0f8853e2e0",
@@ -95,6 +97,67 @@ fn release_version() -> &'static str {
 
 fn is_beta_release() -> bool {
     release_version().contains("-beta.")
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_beta_bundle_name() -> Result<(), String> {
+    if !is_beta_release() {
+        return Ok(());
+    }
+
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let Some(macos_directory) = executable.parent() else {
+        return Ok(());
+    };
+    if macos_directory.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
+        return Ok(());
+    }
+    let Some(contents_directory) = macos_directory.parent() else {
+        return Ok(());
+    };
+    if contents_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("Contents")
+    {
+        return Ok(());
+    }
+    let Some(source_bundle) = contents_directory.parent() else {
+        return Ok(());
+    };
+    if source_bundle.file_name().and_then(|name| name.to_str()) != Some("Codex Taskboard.app") {
+        return Ok(());
+    }
+
+    let destination_bundle = source_bundle
+        .parent()
+        .unwrap()
+        .join("Codex Taskboard Beta.app");
+    if destination_bundle.exists() {
+        return Err(format!(
+            "Cannot rename {} because {} already exists",
+            source_bundle.display(),
+            destination_bundle.display()
+        ));
+    }
+    let relative_executable = executable.strip_prefix(source_bundle).unwrap();
+    let destination_executable = destination_bundle.join(relative_executable);
+    fs::rename(source_bundle, &destination_bundle).map_err(|error| error.to_string())?;
+
+    let error = StdCommand::new(&destination_executable)
+        .args(std::env::args_os().skip(1))
+        .env(BETA_BUNDLE_MIGRATION_ENV, "1")
+        .exec();
+    if let Err(rollback_error) = fs::rename(&destination_bundle, source_bundle) {
+        return Err(format!(
+            "Failed to launch {}: {error}; rollback failed: {rollback_error}",
+            destination_executable.display()
+        ));
+    }
+    Err(format!(
+        "Failed to launch {}: {error}",
+        destination_executable.display()
+    ))
 }
 
 #[derive(Clone, Serialize)]
@@ -2041,6 +2104,11 @@ async fn offer_update(
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    let beta_bundle_migrated = std::env::var_os(BETA_BUNDLE_MIGRATION_ENV).is_some();
+    #[cfg(target_os = "macos")]
+    std::env::remove_var(BETA_BUNDLE_MIGRATION_ENV);
+
     let app = tauri::Builder::default()
         .enable_macos_default_menu(false)
         .plugin(tauri_plugin_autostart::init(
@@ -2049,7 +2117,7 @@ fn main() {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
             let home_directory = app.path().home_dir()?;
@@ -2105,8 +2173,20 @@ fn main() {
             ));
             app.manage(state.clone());
             #[cfg(target_os = "macos")]
+            if let Err(error) = migrate_beta_bundle_name() {
+                append_log(&state, &format!("Beta App bundle rename failed: {error}"));
+            }
+            #[cfg(target_os = "macos")]
             if let Err(error) = install_taskctl_symlink(app.handle()) {
                 append_log(&state, &format!("taskctl sync failed: {error}"));
+            }
+
+            #[cfg(target_os = "macos")]
+            if beta_bundle_migrated {
+                let manager = app.autolaunch();
+                if manager.is_enabled()? {
+                    manager.enable()?;
+                }
             }
 
             let app_info = MenuItem::with_id(
