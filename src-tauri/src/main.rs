@@ -74,6 +74,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const LAUNCHER_STOP_TIMEOUT: Duration = Duration::from_secs(36);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const BETA_UPDATER_ENDPOINT: &str =
+    "https://raw.githubusercontent.com/chuspeeism/dashi-taskboard/beta-updater/latest.json";
 // Unique whole-directory snapshots shipped from app-v0.2.0 through v1.1.2.
 const KNOWN_TASKBOARD_SKILL_DIGESTS: [&str; 6] = [
     "eeaaa5d71a2c47688bf62a5eb9f45e9138fe49eb636a46cfd6af8a0f8853e2e0",
@@ -1632,11 +1634,27 @@ async fn check_for_startup_update(
         snapshot.update_message = "正在检查更新…".into();
         snapshot.update_available = false;
     });
-    let update = app
-        .updater_builder()
-        .version_comparator(|current, release| {
-            if is_beta_release() {
-                release.version >= current
+    let beta_release = is_beta_release();
+    let current_release_version = if beta_release {
+        release_version()
+            .parse()
+            .map_err(|error| format!("Invalid release version {}: {error}", release_version()))?
+    } else {
+        app.package_info().version.clone()
+    };
+    let mut updater_builder = app.updater_builder();
+    if beta_release {
+        let beta_endpoint = BETA_UPDATER_ENDPOINT
+            .parse()
+            .map_err(|error| format!("Invalid Beta updater endpoint: {error}"))?;
+        updater_builder = updater_builder
+            .endpoints(vec![beta_endpoint])
+            .map_err(|error| error.to_string())?;
+    }
+    let update = updater_builder
+        .version_comparator(move |current, release| {
+            if beta_release {
+                release.version > current_release_version
             } else {
                 release.version > current
             }
