@@ -40,7 +40,10 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(target_os = "windows")]
-use std::{os::windows::fs::OpenOptionsExt, process::ChildStdin};
+use std::{
+    os::windows::{fs::OpenOptionsExt, process::CommandExt},
+    process::ChildStdin,
+};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 use tauri::{
@@ -63,7 +66,7 @@ use windows::{
                 RM_UNIQUE_PROCESS,
             },
             Threading::{
-                GetProcessTimes, OpenProcess, WaitForSingleObject,
+                GetProcessTimes, OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW,
                 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
             },
         },
@@ -1687,6 +1690,8 @@ fn start_launcher_locked(
         .unwrap_or_else(|| home_directory.join(".config"))
         .join("Codex");
     let mut command = StdCommand::new(&node_path);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW.0);
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     command.arg(&injector_path);
     #[cfg(target_os = "windows")]
