@@ -33,7 +33,11 @@ test("the launcher keeps CDP random and prefers the Taskboard port with a fallba
   );
   assert.match(
     launcherSource,
-    /#\[cfg\(target_os = "macos"\)\]\s+command\.args\(\["--launch", "--watch", "--open", "--port", &codex_port\]\);/,
+    /#\[cfg\(any\(target_os = "macos", target_os = "windows"\)\)\]\s+command\.args\(\["--launch", "--watch", "--open", "--port", &codex_port\]\);/,
+  );
+  assert.match(
+    launcherSource,
+    /#\[cfg\(target_os = "linux"\)\]\s+command\.args\(\["--launch", "--watch", "--open", "--cdp-pipe"\]\);/,
   );
   assert.doesNotMatch(launcherSource, /const LAUNCHER_PORT/);
 });
