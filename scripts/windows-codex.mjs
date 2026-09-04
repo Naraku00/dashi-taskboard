@@ -147,7 +147,7 @@ export function stopWindowsCodex(pid, environment, run = spawnSync) {
 export function windowsCodexProfileArgument(command, profilePath) {
   const normalizedCommand = command.toLocaleLowerCase("en-US");
   return normalizedCommand.includes("--user-data-dir")
-    && normalizedCommand.includes(path.resolve(profilePath).toLocaleLowerCase("en-US"));
+    && normalizedCommand.includes(path.win32.resolve(profilePath).toLocaleLowerCase("en-US"));
 }
 
 export function windowsRootProcesses(processes) {
