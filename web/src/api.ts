@@ -775,7 +775,7 @@ export function attachmentContentUrl(attachment: { id: string }): string {
   return `api/attachments/${encodeURIComponent(attachment.id)}/content`;
 }
 
-export function attachmentDownloadUrl(attachment: Attachment): string {
+export function attachmentDownloadUrl(attachment: { id: string }): string {
   return `api/attachments/${encodeURIComponent(attachment.id)}/download`;
 }
 

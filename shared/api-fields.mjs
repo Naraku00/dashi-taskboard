@@ -140,3 +140,24 @@ export function parseRelationOrigin(value) {
   }
   return value;
 }
+
+const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+export function parseVersion(value, { allowZero = false } = {}) {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
+    throw new ApiError(
+      400,
+      "INVALID_FIELD",
+      `'version' must be a ${allowZero ? "non-negative" : "positive"} integer`,
+    );
+  }
+  return value;
+}
+
+export function validateProjectId(value, { required = true } = {}) {
+  const id = stringField(value, "id", { required, maxLength: 64 });
+  if (id !== undefined && !PROJECT_ID_PATTERN.test(id)) {
+    throw new ApiError(400, "INVALID_FIELD", "'id' must be a lowercase slug containing letters, numbers, or hyphens");
+  }
+  return id;
+}

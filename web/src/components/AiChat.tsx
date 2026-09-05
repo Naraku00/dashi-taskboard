@@ -1,3 +1,4 @@
+import { composerReferencePersistence, readComposerReferenceId } from "../../../shared/composer-reference.mjs";
 import {
   useCallback,
   useEffect,
@@ -299,49 +300,19 @@ function skillDisplayName(skill: Pick<AiChatSkill, "id" | "label">): string {
     .join(" ");
 }
 
-function stableComposerReferenceId(
-  referenceKey: string,
-  kind: "skill" | "agent" = "skill",
-): string | null {
-  try {
-    if (!/^[A-Za-z0-9_-]+$/.test(referenceKey) || referenceKey.length % 4 === 1) return null;
-    const padded = `${referenceKey.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - referenceKey.length % 4) % 4)}`;
-    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-    const stableId = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    if (!stableId || (kind === "skill" && stableId !== stableId.normalize("NFC"))) return null;
-    const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(stableId)))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
-    return encoded === referenceKey ? stableId : null;
-  } catch {
-    return null;
-  }
-}
-
-function stableComposerReferenceKey(
-  stableId: string,
-  kind: "skill" | "agent" = "skill",
-): string {
-  const normalizedStableId = kind === "skill" ? stableId.normalize("NFC") : stableId;
-  return btoa(String.fromCharCode(...new TextEncoder().encode(normalizedStableId)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function escapedComposerReferenceLabel(label: string): string {
-  return label.replace(/[\\[\]]/g, "\\$&");
-}
-
 function composerStableReference(
   kind: "skill" | "agent",
   stableId: string,
   label: string,
-  referenceKey = stableComposerReferenceKey(stableId, kind),
-  markdown = `[${escapedComposerReferenceLabel(label)}](taskboard://composer-reference/v1/${kind}/${referenceKey})`,
+  referenceKey?: string,
+  markdown?: string,
 ): ComposerStableReference {
-  return { kind, stableId, referenceKey, label, markdown };
+  const persistence = composerReferencePersistence(kind, stableId, label);
+  return {
+    kind, stableId, label,
+    referenceKey: referenceKey ?? persistence.referenceKey,
+    markdown: markdown ?? persistence.markdown,
+  };
 }
 
 function eventSkillIds(event: AiChatEvent): string[] {
@@ -627,7 +598,7 @@ function composerFragmentFromHtml(
       const referenceMatch = /^taskboard:\/\/composer-reference\/v1\/(skill|agent)\/([A-Za-z0-9_-]+)$/.exec(href);
       const referenceKind = referenceMatch?.[1] === "agent" ? "agent" : "skill";
       const stableReferenceId = referenceMatch
-        ? stableComposerReferenceId(referenceMatch[2], referenceKind)
+        ? readComposerReferenceId(referenceMatch[2], referenceKind)
         : null;
       if (stableReferenceId && referenceMatch) {
         const referenceKey = referenceMatch[2];
@@ -686,7 +657,7 @@ function composerFragmentFromPlainText(
     const referenceKind = match[3] === "agent" ? "agent" : "skill";
     const referenceKey = match[4];
     const stableReferenceId = referenceKey
-      ? stableComposerReferenceId(referenceKey, referenceKind)
+      ? readComposerReferenceId(referenceKey, referenceKind)
       : null;
     const legacySkillId = !referenceKey && label.startsWith("$") ? label.slice(1) : null;
     const stableId = stableReferenceId ?? legacySkillId;
@@ -697,7 +668,7 @@ function composerFragmentFromPlainText(
       kind,
       stableId,
       stableReferenceId ? label : skill?.label ?? stableId,
-      referenceKey || stableComposerReferenceKey(stableId),
+      referenceKey || undefined,
       stableReferenceId ? match[0] : undefined,
     );
     message += text.slice(cursor, match.index).replaceAll(SKILL_MARKER, "\uFFFD");
@@ -2291,7 +2262,7 @@ export function AiChat({
     tokenElement.dataset.composerKind = candidate.kind;
     const persistence = candidate.persistence?.kind === candidate.kind ? candidate.persistence : null;
     const stableId = persistence
-      ? stableComposerReferenceId(persistence.referenceKey, candidate.kind)
+      ? readComposerReferenceId(persistence.referenceKey, candidate.kind)
       : null;
     if (stableId && persistence) {
       if (candidate.kind === "skill") tokenElement.dataset.skillId = stableId;
