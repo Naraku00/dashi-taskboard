@@ -1,3 +1,20 @@
+import {
+  ApiError,
+  assertPlainObject,
+  assertAllowedKeys,
+  stringField,
+  parseDueDate,
+  parseRecurrence,
+  parseSortOrder,
+  parseLabels,
+  parseStatus,
+  parsePriority,
+  slugify,
+  parseProjectLabel,
+  parseThreadId,
+  parseAssigneeTarget,
+  parseRelationOrigin,
+} from "../shared/api-fields.mjs";
 import { createHmac, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -14,7 +31,6 @@ import {
   DEFAULT_PROJECT_ID,
   JIRA_PROJECT_ID,
   TASK_STATUSES,
-  isTaskPriority,
   isTaskStatus,
 } from "../shared/domain.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
@@ -28,7 +44,7 @@ import {
   createCloudProxy,
   isLocalCompanionRoute,
 } from "./cloud-proxy.mjs";
-import { ApiError, TaskboardDatabase } from "./database.mjs";
+import { TaskboardDatabase } from "./database.mjs";
 import { createJiraConfigStore } from "./jira-config.mjs";
 import { createJiraIntegration } from "./jira-integration.mjs";
 import { ProjectSummaryService } from "./project-summary.mjs";
@@ -260,19 +276,6 @@ function assertLoopbackRequest(request) {
   }
 }
 
-function assertPlainObject(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ApiError(400, "INVALID_BODY", "Request body must be a JSON object");
-  }
-}
-
-function assertAllowedKeys(value, allowed) {
-  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) {
-    throw new ApiError(400, "UNKNOWN_FIELD", `Unknown field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
-  }
-}
-
 function assertAllowedQuery(searchParams, allowed, routeLabel) {
   for (const key of searchParams.keys()) {
     if (!allowed.has(key)) {
@@ -336,29 +339,6 @@ function assertAiLoopbackRequest(request) {
   }
 }
 
-function stringField(value, name, { required = false, nullable = false, maxLength }) {
-  if (value === undefined) {
-    if (required) {
-      throw new ApiError(400, "INVALID_FIELD", `'${name}' is required`);
-    }
-    return undefined;
-  }
-  if (nullable && value === null) {
-    return null;
-  }
-  if (typeof value !== "string") {
-    throw new ApiError(400, "INVALID_FIELD", `'${name}' must be a string${nullable ? " or null" : ""}`);
-  }
-  const normalized = value.trim();
-  if (required && normalized.length === 0) {
-    throw new ApiError(400, "INVALID_FIELD", `'${name}' cannot be empty`);
-  }
-  if (normalized.length > maxLength) {
-    throw new ApiError(400, "INVALID_FIELD", `'${name}' cannot exceed ${maxLength} characters`);
-  }
-  return normalized;
-}
-
 function pathField(value, name) {
   const normalized = stringField(value, name, { nullable: true, maxLength: 4096 });
   if (normalized === "") {
@@ -368,14 +348,6 @@ function pathField(value, name) {
     throw new ApiError(400, "INVALID_FIELD", `'${name}' cannot contain null bytes`);
   }
   return normalized;
-}
-
-function parseDueDate(value, name = "dueDate") {
-  const date = stringField(value, name, { nullable: true, maxLength: 10 });
-  if (date !== null && date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    throw new ApiError(400, "INVALID_FIELD", `'${name}' must use YYYY-MM-DD`);
-  }
-  return date;
 }
 
 function parseDevelopmentContext(value) {
@@ -403,71 +375,11 @@ function parseDevelopmentContext(value) {
   throw new ApiError(400, "INVALID_FIELD", "'developmentContext.type' must be branch or worktree");
 }
 
-function parseRecurrence(value) {
-  if (value === null) return null;
-  assertPlainObject(value);
-  assertAllowedKeys(value, new Set(["interval", "unit"]));
-  if (!Number.isSafeInteger(value.interval) || value.interval < 1 || value.interval > 365) {
-    throw new ApiError(400, "INVALID_FIELD", "'recurrence.interval' must be an integer from 1 to 365");
-  }
-  if (!["day", "week", "month", "year"].includes(value.unit)) {
-    throw new ApiError(400, "INVALID_FIELD", "'recurrence.unit' must be day, week, month, or year");
-  }
-  return { interval: value.interval, unit: value.unit };
-}
-
 function parseVersion(value) {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new ApiError(400, "INVALID_FIELD", "'version' must be a positive integer");
   }
   return value;
-}
-
-function parseSortOrder(value) {
-  if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > 1_000_000_000_000) {
-    throw new ApiError(400, "INVALID_FIELD", "'sortOrder' must be a finite number between -1000000000000 and 1000000000000");
-  }
-  return value;
-}
-
-function parseLabels(value) {
-  if (!Array.isArray(value) || value.length > 20) {
-    throw new ApiError(400, "INVALID_FIELD", "'labels' must be an array with at most 20 entries");
-  }
-  const labels = value.map((label) => {
-    if (typeof label !== "string") {
-      throw new ApiError(400, "INVALID_FIELD", "Every label must be a string");
-    }
-    const normalized = label.trim();
-    if (normalized.length === 0 || normalized.length > 64) {
-      throw new ApiError(400, "INVALID_FIELD", "Labels must contain 1 to 64 characters");
-    }
-    return normalized;
-  });
-  if (new Set(labels).size !== labels.length) {
-    throw new ApiError(400, "INVALID_FIELD", "Labels must be unique");
-  }
-  return labels;
-}
-
-function parseStatus(value, fallback) {
-  const result = value ?? fallback;
-  if (!isTaskStatus(result)) {
-    throw new ApiError(400, "INVALID_FIELD", `'status' must be one of: ${TASK_STATUSES.join(", ")}`);
-  }
-  return result;
-}
-
-function parsePriority(value, fallback) {
-  const result = value ?? fallback;
-  if (!isTaskPriority(result)) {
-    throw new ApiError(400, "INVALID_FIELD", "'priority' must be none, urgent, high, medium, or low");
-  }
-  return result;
-}
-
-function slugify(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
 }
 
 function validateProjectId(value, { required = true } = {}) {
@@ -496,12 +408,6 @@ function parseProjectCreate(body) {
   return { id, name, workspacePath };
 }
 
-function parseProjectLabel(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["label"]));
-  return stringField(body.label, "label", { required: true, maxLength: 64 });
-}
-
 function parseProjectReadmeSave(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set(["content", "version"]));
@@ -517,11 +423,6 @@ function parseProjectReadmeSave(body) {
     throw new ApiError(400, "INVALID_FIELD", "'version' must be a non-negative integer");
   }
   return { content, version };
-}
-
-function parseThreadId(value) {
-  if (value === undefined) return undefined;
-  return stringField(value, "threadId", { required: true, maxLength: 256 });
 }
 
 function parseThreadBinding(value) {
@@ -623,14 +524,6 @@ function actorFromRequest(request) {
   return { type: "user", id, name, avatarUrl };
 }
 
-function parseAssigneeTarget(value) {
-  if (value === undefined) return undefined;
-  if (value !== "current-user" && value !== "codex-agent") {
-    throw new ApiError(400, "INVALID_FIELD", "'assigneeTarget' must be current-user or codex-agent");
-  }
-  return value;
-}
-
 function resolveAssignee(target, actor) {
   if (target === undefined) return actor;
   if (target === "codex-agent") return CODEX_AGENT_ACTOR;
@@ -719,14 +612,6 @@ function parseArchive(body) {
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
   };
-}
-
-function parseRelationOrigin(value) {
-  if (value === undefined) return undefined;
-  if (value !== "manual" && value !== "mention") {
-    throw new ApiError(400, "INVALID_FIELD", "'origin' must be manual or mention");
-  }
-  return value;
 }
 
 function parseRelationMutation(body) {

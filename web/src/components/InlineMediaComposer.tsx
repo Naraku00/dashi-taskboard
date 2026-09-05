@@ -55,7 +55,6 @@ import {
 import { useTaskboardI18n } from "../i18n";
 import { readIssueIdentifier } from "../issueRoute";
 import { STATUS_DETAILS } from "./BoardColumn";
-import { fileKey, MAX_ATTACHMENT_SIZE } from "./PendingAttachments";
 import { LinearIcon } from "./LinearIcon";
 import { MermaidDiagram } from "./MarkdownDocument";
 import {
@@ -117,6 +116,12 @@ interface IssueReferenceSegment {
   identifier: string;
   projectId: string;
   taskId: string | null;
+}
+
+const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
+
+function fileKey(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 export interface InlineComposerReferenceSegment {
@@ -585,18 +590,6 @@ export function inlineMediaImages(segments: InlineMediaSegment[]): PendingInline
 export function inlineMediaFiles(segments: InlineMediaSegment[]): PendingInlineAttachment[] {
   return segments.filter((segment): segment is PendingInlineAttachment => (
     segment.type === "pending-attachment"
-  ));
-}
-
-export function inlineMediaComposerReferences(
-  segments: InlineMediaSegment[],
-): Array<InlineComposerReferenceSegment | InlineUnsupportedComposerReferenceSegment> {
-  return segments.filter((segment): segment is (
-    InlineComposerReferenceSegment | InlineUnsupportedComposerReferenceSegment
-  ) => (
-    segment.type === "skill-reference"
-    || segment.type === "agent-reference"
-    || segment.type === "unsupported-reference"
   ));
 }
 
