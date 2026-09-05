@@ -1,4 +1,8 @@
 import {
+  parseThreadBinding, parseMove, parseVersionMutation, parseRelationMutation,
+  parseCommentCreate, parseCommentPatch, parseTaskCreate,
+} from "../../shared/task-input.mjs";
+import {
   commentConversationTitle,
   threadBindingFromRow,
   legacyLocalThreadIdFromRow,
@@ -12,12 +16,13 @@ import {
 } from "../../shared/task-records.mjs";
 import {
   ApiError,
+  parseVersion,
+  validateProjectId,
   assertPlainObject,
   assertAllowedKeys,
   stringField,
   parseDueDate,
   parseRecurrence,
-  parseSortOrder,
   parseLabels,
   parseStatus,
   parsePriority,
@@ -25,7 +30,6 @@ import {
   parseProjectLabel,
   parseThreadId,
   parseAssigneeTarget,
-  parseRelationOrigin,
 } from "../../shared/api-fields.mjs";
 import { DurableObject } from "cloudflare:workers";
 
@@ -35,7 +39,6 @@ const JSON_BODY_LIMIT = 1024 * 1024;
 const PROJECT_README_BODY_LIMIT = 3 * 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT = 25 * 1024 * 1024;
 const DEFAULT_PROJECT_LABELS_JSON = JSON.stringify(DEFAULT_LABEL_NAMES);
-const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const PROJECT_BOARD_DISPLAY_SETTINGS_KEY_PREFIX = "taskboard.project-board-display-settings.v3.";
 const INLINE_ATTACHMENT_TYPES = new Set([
   "application/pdf",
@@ -135,17 +138,6 @@ function methodNotAllowed(allowed) {
   });
 }
 
-function parseVersion(value, { allowZero = false } = {}) {
-  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
-    throw new ApiError(
-      400,
-      "INVALID_FIELD",
-      `'version' must be a ${allowZero ? "non-negative" : "positive"} integer`,
-    );
-  }
-  return value;
-}
-
 function parseDevelopmentContext(value) {
   if (value === null) return null;
   assertPlainObject(value);
@@ -185,66 +177,6 @@ function parseDevelopmentContext(value) {
     "INVALID_FIELD",
     "'developmentContext.type' must be branch or worktree",
   );
-}
-
-function parseThreadBinding(value) {
-  if (value === undefined || value === null) return value;
-  assertPlainObject(value);
-  assertAllowedKeys(value, new Set([
-    "threadId",
-    "codexProjectId",
-    "codexProjectKind",
-    "codexHostId",
-    "workspacePath",
-  ]));
-  const threadId = stringField(value.threadId, "threadBinding.threadId", {
-    required: true,
-    maxLength: 256,
-  });
-  const identityFields = [
-    value.codexProjectId,
-    value.codexProjectKind,
-    value.codexHostId,
-    value.workspacePath,
-  ];
-  if (identityFields.every((field) => field === undefined)) return { threadId };
-  if (identityFields.some((field) => field === undefined)) {
-    throw new ApiError(400, "INVALID_FIELD", "Thread identity must include project, kind, host, and workspace");
-  }
-  const codexProjectId = stringField(value.codexProjectId, "threadBinding.codexProjectId", {
-    required: true,
-    maxLength: 256,
-  });
-  const codexProjectKind = value.codexProjectKind;
-  const codexHostId = stringField(value.codexHostId, "threadBinding.codexHostId", {
-    required: true,
-    maxLength: 256,
-  });
-  const workspacePath = stringField(value.workspacePath, "threadBinding.workspacePath", {
-    required: true,
-    maxLength: 4096,
-  });
-  if (
-    (codexProjectKind !== "local" && codexProjectKind !== "remote")
-    || (codexProjectKind === "local" && codexHostId !== "local")
-    || (codexProjectKind === "remote" && codexHostId === "local")
-    || workspacePath.includes("\0")
-  ) {
-    throw new ApiError(400, "INVALID_FIELD", "Thread project identity is invalid");
-  }
-  return { threadId, codexProjectId, codexProjectKind, codexHostId, workspacePath };
-}
-
-function validateProjectId(value) {
-  const id = stringField(value, "id", { required: true, maxLength: 64 });
-  if (!PROJECT_ID_PATTERN.test(id)) {
-    throw new ApiError(
-      400,
-      "INVALID_FIELD",
-      "'id' must be a lowercase slug containing letters, numbers, or hyphens",
-    );
-  }
-  return id;
 }
 
 function now() {
@@ -973,46 +905,6 @@ function parseClientStorageUpdate(body) {
   };
 }
 
-function parseTaskCreate(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set([
-    "projectId",
-    "title",
-    "description",
-    "status",
-    "priority",
-    "labels",
-    "sortOrder",
-    "threadId",
-    "threadBinding",
-    "assigneeTarget",
-    "developmentContext",
-    "startDate",
-    "dueDate",
-    "recurrence",
-  ]));
-  const input = {
-    projectId: validateProjectId(body.projectId ?? "local"),
-    title: stringField(body.title, "title", { required: true, maxLength: 240 }),
-    description: stringField(body.description ?? "", "description", { maxLength: 100_000 }),
-    status: parseStatus(body.status, "backlog"),
-    priority: parsePriority(body.priority, "none"),
-    labels: body.labels === undefined ? [] : parseLabels(body.labels),
-    sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
-    threadId: parseThreadId(body.threadId),
-    threadBinding: parseThreadBinding(body.threadBinding),
-    assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
-    developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
-    startDate: parseDueDate(body.startDate ?? null, "startDate"),
-    dueDate: parseDueDate(body.dueDate ?? null),
-    recurrence: parseRecurrence(body.recurrence ?? null),
-  };
-  if (input.recurrence && !input.dueDate) {
-    throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires 'dueDate'");
-  }
-  return input;
-}
-
 function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
@@ -1058,63 +950,6 @@ function parseTaskPatch(body) {
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
     assigneeTarget,
-  };
-}
-
-function parseMove(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "status", "sortOrder", "threadId", "threadBinding"]));
-  return {
-    version: parseVersion(body.version),
-    status: parseStatus(body.status),
-    sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
-    threadId: parseThreadId(body.threadId),
-    threadBinding: parseThreadBinding(body.threadBinding),
-  };
-}
-
-function parseVersionMutation(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "threadId", "threadBinding"]));
-  return {
-    version: parseVersion(body.version),
-    threadId: parseThreadId(body.threadId),
-    threadBinding: parseThreadBinding(body.threadBinding),
-  };
-}
-
-function parseRelationMutation(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "threadId", "threadBinding", "origin"]));
-  return {
-    version: parseVersion(body.version),
-    threadId: parseThreadId(body.threadId),
-    threadBinding: parseThreadBinding(body.threadBinding),
-    origin: parseRelationOrigin(body.origin),
-  };
-}
-
-function parseCommentCreate(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["body", "threadId", "threadBinding"]));
-  return {
-    body: stringField(body.body ?? "", "body", { maxLength: 100_000 }),
-    threadId: parseThreadId(body.threadId),
-    threadBinding: parseThreadBinding(body.threadBinding),
-  };
-}
-
-function parseCommentPatch(body) {
-  assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "body", "threadId", "threadBinding"]));
-  if (body.body === undefined) {
-    throw new ApiError(400, "INVALID_FIELD", "'body' is required");
-  }
-  return {
-    version: parseVersion(body.version),
-    body: stringField(body.body, "body", { maxLength: 100_000 }),
-    threadId: parseThreadId(body.threadId),
-    threadBinding: parseThreadBinding(body.threadBinding),
   };
 }
 
@@ -2897,7 +2732,7 @@ async function routeApi(request, env, actor, url) {
     }
     if (request.method === "POST") {
       return json(201, {
-        task: await createTask(env, parseTaskCreate(await readJson(request)), actor),
+        task: await createTask(env, parseTaskCreate(await readJson(request), parseDevelopmentContext), actor),
       });
     }
     methodNotAllowed(["GET", "POST"]);
